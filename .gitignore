@@ -4,12 +4,11 @@ __pycache__/
 
 # Logs and databases
 *.log
+*.txt
 vector_db.pkl
 rag_chat_history.json
 documents_metadata.json
 deep_analysis_*.json
-# Chainlit
-.chainlit/
 
 # IDE and OS specific
 .vscode/

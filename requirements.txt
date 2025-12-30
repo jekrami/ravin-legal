@@ -1,5 +1,5 @@
-chainlit
 pymupdf
+pdfplumber
 faiss-cpu
 python-bidi
 arabic_reshaper
