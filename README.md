@@ -1,5 +1,7 @@
 # Multi-Model Persian Contract Analyzer
 
+**Version 1.0.0**
+
 This project is a sophisticated legal analysis tool designed to interpret and answer questions about Iranian legal contracts. It leverages a multi-model Retrieval-Augmented Generation (RAG) pipeline, local Ollama models, and a modern Gradio interface to provide precise, Persian-first legal analysis.
 
 ## Core Features
@@ -31,7 +33,7 @@ This project is a sophisticated legal analysis tool designed to interpret and an
     - **Secondary Verifier** - Cross-validates findings for accuracy
     - **Synthesizer** - Resolves conflicts and generates coherent, legally conservative answers
 -   **RAG Pipeline:** Robust retrieval system with:
-    - `pymupdf` for accurate PDF text extraction
+    - PyMuPDF for accurate PDF text extraction (shared across RAG and deep analysis)
     - FAISS vector database for efficient semantic search
     - Hybrid retrieval with keyword boosting for legal terms
     - Multilingual embeddings optimized for Persian text
@@ -147,12 +149,13 @@ The Gradio interface provides two main tabs:
 | ------------------------- | -------------------------------------------------------------------------------- |
 | `app_gradio.py`           | **Main entry point** - Gradio web interface with RAG chat and deep analysis     |
 | `requirements.txt`        | Python dependencies required for the project                                      |
-| `config.py`               | Configuration variables: model names, RAG parameters, API endpoints              |
+| `config.py`               | Configuration variables: version, model names, RAG parameters, API endpoints     |
 | `document_processor.py`   | PDF parsing, text extraction, RTL correction, and text chunking                 |
 | `rag_pipeline.py`         | FAISS vector store, embeddings, and hybrid retrieval logic with keyword boosting |
 | `llm_handler.py`          | Ollama model interactions, parallel execution, and answer synthesis             |
 | `legal_analyzer/`         | Deep legal analysis module with 8-stage analysis passes                          |
 | `legal_analyzer/passes.py`| Analysis pass definitions and configurations                                     |
+| `legal_analyzer/ollama_client.py` | Unified Ollama client for chat and generate API calls                          |
 | `legal_analyzer/orchestrator.py` | Coordinates multi-stage analysis execution                                      |
 | `legal_analyzer/presentation.py` | Generates Persian presentation reports from analysis results                    |
 | `vector_db.pkl`           | **Generated:** FAISS index and document chunks (persistent storage)             |

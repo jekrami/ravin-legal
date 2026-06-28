@@ -1,43 +1,39 @@
-from orchestrator import run_deep_analysis
-from presentation import generate_persian_presentation
-
 import json
-import pdfplumber
-import arabic_reshaper
-from bidi.algorithm import get_display
+import logging
 
+from document_processor import extract_full_text
+from legal_analyzer.orchestrator import run_deep_analysis
+from legal_analyzer.presentation import generate_persian_presentation
 
-def pdf_to_text(pdf_path: str) -> str:
-    text = ""
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-    return text.strip()
-def normalize_rtl(text: str) -> str:
-    reshaped_text = arabic_reshaper.reshape(text)
-    return get_display(reshaped_text)
+logger = logging.getLogger(__name__)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
 
-    # 1. PDF → Text → RTL normalization
-    contract_text = normalize_rtl(pdf_to_text("contract.pdf"))
+    contract_text = extract_full_text("contract.pdf")
+    if not contract_text:
+        raise SystemExit("Could not extract text from contract.pdf")
 
-    # 2. Deep legal analysis (English, structured)
-    analysis = run_deep_analysis(contract_text)
+    results = None
+    for event in run_deep_analysis(contract_text):
+        if event["event"] == "progress":
+            logger.info(
+                "Progress: step %d/%d - %s",
+                event["step"],
+                event["total"],
+                event["title"],
+            )
+        elif event["event"] == "complete":
+            results = event["results"]
 
-    # 3. Save canonical analysis (DO NOT TRANSLATE)
     with open("analysis_result.json", "w", encoding="utf-8") as f:
-        json.dump(analysis, f, ensure_ascii=False, indent=2)
+        json.dump(results, f, ensure_ascii=False, indent=2)
 
     print("Deep legal analysis completed.")
 
-    # 4. Presentation-layer translation (optional UI feature)
-    persian_presentation = generate_persian_presentation(
+    generate_persian_presentation(
         analysis_json_path="analysis_result.json",
-        output_path="presentation_fa.txt"
+        output_path="presentation_fa.txt",
     )
-
     print("Persian legal presentation generated.")

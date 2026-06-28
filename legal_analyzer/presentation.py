@@ -1,13 +1,16 @@
 import json
-import requests
+import logging
 from pathlib import Path
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL_NAME = "qwen2.5:14b-instruct"  # Using same model as ollama_client for consistency
+from .ollama_client import ollama_chat_messages
+
+logger = logging.getLogger(__name__)
+
 
 def load_analysis_json(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def build_presentation_prompt(analysis_json: dict) -> list:
     system_prompt = """
@@ -25,7 +28,7 @@ MANDATORY RULES:
 - If a legal term has no exact Persian equivalent, you may keep the English term ONLY inside parentheses.
 - You MUST NOT add, remove, or modify meaning.
 - You MUST NOT perform legal analysis.
-- You MUST NOT use analytical labels such as “PASS”, “analysis”, “recommendation”, or similar.
+- You MUST NOT use analytical labels such as "PASS", "analysis", "recommendation", or similar.
 - You MUST NOT address the reader directly.
 - You MUST NOT give advice.
 
@@ -56,42 +59,26 @@ If the JSON states uncertainty or missing information, explicitly state:
         {
             "role": "user",
             "content": "Here is the authoritative legal analysis JSON:\n\n"
-                       + json.dumps(analysis_json, ensure_ascii=False, indent=2)
-        }
+            + json.dumps(analysis_json, ensure_ascii=False, indent=2),
+        },
     ]
 
-def call_ollama(messages: list) -> str:
-    payload = {
-        "model": MODEL_NAME,
-        "messages": messages,
-        "stream": False,
-        "options": {
-            "temperature": 0.2,
-            "top_p": 0.9
-        }
-    }
-
-    response = requests.post(OLLAMA_URL, json=payload, timeout=300)
-    response.raise_for_status()
-
-    data = response.json()
-    return data["message"]["content"]
 
 def generate_persian_presentation(
     analysis_json_path: str,
-    output_path: str = "presentation_fa.txt"
+    output_path: str = "presentation_fa.txt",
 ):
     analysis_json = load_analysis_json(analysis_json_path)
     messages = build_presentation_prompt(analysis_json)
-
-    persian_text = call_ollama(messages)
-
+    persian_text = ollama_chat_messages(messages)
     Path(output_path).write_text(persian_text, encoding="utf-8")
+    logger.info("Persian presentation saved to %s", output_path)
     return persian_text
 
+
 if __name__ == "__main__":
-    result = generate_persian_presentation(
+    generate_persian_presentation(
         analysis_json_path="analysis_result.json",
-        output_path="presentation_fa.txt"
+        output_path="presentation_fa.txt",
     )
     print("Presentation-layer translation completed.")
