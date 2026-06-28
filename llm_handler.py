@@ -1,3 +1,10 @@
+"""
+Ollama LLM handler for RAG chat synthesis.
+
+LlmHandler is a process-wide singleton: it holds only a shared ThreadPoolExecutor
+and is safe to use across concurrent Gradio sessions. Per-session state lives in
+the services layer (SessionManager / DocumentService).
+"""
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor

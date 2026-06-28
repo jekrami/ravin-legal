@@ -1,16 +1,18 @@
 # Multi-Model Persian Contract Analyzer
 
-**Version 1.0.0**
+**Version 2.0.0**
 
 This project is a sophisticated legal analysis tool designed to interpret and answer questions about Iranian legal contracts. It leverages a multi-model Retrieval-Augmented Generation (RAG) pipeline, local Ollama models, and a modern Gradio interface to provide precise, Persian-first legal analysis.
+
+**v2.0.0** introduces per-session isolated state, thread-safe concurrency, and a pytest test suite.
 
 ## Core Features
 
 ### 💬 Interactive Document Chat (RAG)
 -   **Question-Answer Interface:** Upload legal documents and ask questions in natural Persian language
--   **Multi-Document Support:** Manage multiple documents in a shared knowledge base
+-   **Multi-Document Support:** Manage multiple documents in a per-session knowledge base
 -   **Source Attribution:** Every answer includes references to the specific documents and sections used
--   **Persistent Memory:** Chat history and document metadata are saved across sessions
+-   **Persistent Memory:** Chat history and document metadata are saved per browser session
 -   **Document Management:** Upload, view, and delete documents with an intuitive interface
 
 ### 🔍 Deep Legal Analysis
@@ -48,7 +50,9 @@ This project is a sophisticated legal analysis tool designed to interpret and an
 
 ## Architecture
 
-The system follows a parallel multi-model architecture:
+Each browser session gets an isolated workspace under `data/sessions/{session_id}/` with its own FAISS index, chat history, metadata, and analysis outputs. A `services/` layer (`SessionManager`, `DocumentService`, `ChatService`, `AnalysisService`) coordinates thread-safe access via per-session locks.
+
+The RAG chat flow follows a parallel multi-model architecture:
 
 1.  **User Input:** The user uploads a PDF and asks a question in the Gradio interface.
 2.  **RAG Retrieval:** The system retrieves the most relevant text chunks from the document using a combination of semantic search and keyword boosting. Legal terms (مبلغ, تاریخ, ماده, فسخ, etc.) receive boosted relevance scores.
@@ -59,6 +63,31 @@ The system follows a parallel multi-model architecture:
 5.  **Final Answer:** The synthesized answer, along with source document references, is displayed to the user in the Gradio interface.
 
 **Note:** Model names are configurable in `config.py`. The default setup uses models optimized for Persian legal text analysis.
+
+### Per-session storage layout
+
+```
+data/
+  sessions/
+    {session_id}/
+      vector_db.pkl
+      documents_metadata.json
+      rag_chat_history.json
+      analysis/
+        deep_analysis_{timestamp}.json
+        presentation_fa.txt
+```
+
+### Breaking changes from v1.0.0
+
+| v1.0.0 | v2.0.0 |
+|--------|--------|
+| Global `vector_db.pkl` in project root | Per-session under `data/sessions/{id}/` |
+| Shared chat history | Per-session chat history |
+| `presentation_fa.txt` in root | Per-session `analysis/presentation_fa.txt` |
+| No tests | `pytest` suite |
+
+To migrate legacy v1 flat files into the first new session, set `MIGRATE_LEGACY=1` before starting the app.
 
 ## Setup and Installation
 
@@ -141,13 +170,27 @@ The Gradio interface provides two main tabs:
 -   **Contract Review:** Quickly identify risks, ambiguities, and legal issues in contracts
 -   **Due Diligence:** Comprehensive analysis of contract enforceability and compliance
 -   **Legal Research:** Ask questions about specific clauses, terms, or legal concepts
--   **Document Comparison:** Analyze multiple contracts in a shared knowledge base
+-   **Document Comparison:** Analyze multiple contracts within a session knowledge base
+
+## Running Tests
+
+Unit tests mock Ollama calls and do not require a running server:
+
+```bash
+python -m pytest
+```
 
 ## Project Structure
 
 | File                      | Purpose                                                                          |
 | ------------------------- | -------------------------------------------------------------------------------- |
-| `app_gradio.py`           | **Main entry point** - Gradio web interface with RAG chat and deep analysis     |
+| `app_gradio.py`           | **Main entry point** - Gradio web interface with per-session state                |
+| `services/`               | Session manager and document/chat/analysis services                             |
+| `services/session_manager.py` | Per-session workspaces, locks, and lazy loading                             |
+| `services/document_service.py` | Upload, delete, list documents per session                                  |
+| `services/chat_service.py` | Per-session chat history persistence                                            |
+| `services/analysis_service.py` | Deep analysis with session-scoped output paths                              |
+| `tests/`                  | pytest suite (RAG, orchestrator, session isolation, concurrency)              |
 | `requirements.txt`        | Python dependencies required for the project                                      |
 | `config.py`               | Configuration variables: version, model names, RAG parameters, API endpoints     |
 | `document_processor.py`   | PDF parsing, text extraction, RTL correction, and text chunking                 |
@@ -158,8 +201,11 @@ The Gradio interface provides two main tabs:
 | `legal_analyzer/ollama_client.py` | Unified Ollama client for chat and generate API calls                          |
 | `legal_analyzer/orchestrator.py` | Coordinates multi-stage analysis execution                                      |
 | `legal_analyzer/presentation.py` | Generates Persian presentation reports from analysis results                    |
-| `vector_db.pkl`           | **Generated:** FAISS index and document chunks (persistent storage)             |
-| `rag_chat_history.json`   | **Generated:** Conversation history across sessions                              |
-| `documents_metadata.json` | **Generated:** Metadata about uploaded documents                                |
-| `deep_analysis_*.json`    | **Generated:** Detailed analysis results in JSON format                          |
-| `presentation_fa.txt`     | **Generated:** Persian text report of analysis results                           |
+| `data/sessions/{id}/`     | **Generated:** Per-session vector DB, metadata, chat, and analysis outputs      |
+
+---
+
+## Authors
+
+**Writer:** J.Ekrami  
+**Co-writer:** Auto (Cursor)

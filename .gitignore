@@ -2,7 +2,10 @@
 __pycache__/
 .venv/
 
-# Logs and databases
+# Session data (per-user workspaces)
+data/
+
+# Logs and legacy v1 flat files
 *.log
 vector_db.pkl
 rag_chat_history.json
@@ -17,3 +20,7 @@ presentation_fa.txt
 .idea/
 *.DS_Store
 *copy.py
+
+# Test artifacts
+.pytest_cache/
+htmlcov/

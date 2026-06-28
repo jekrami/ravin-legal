@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 class RagPipeline:
-    def __init__(self):
-        self.embedding_model = OllamaEmbeddings(model=EMBEDDING_MODEL)
+    def __init__(self, embedding_model=None):
+        self.embedding_model = embedding_model or OllamaEmbeddings(model=EMBEDDING_MODEL)
         self.index = None
         self.documents = []
         self.document_sources = []

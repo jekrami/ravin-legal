@@ -1,4 +1,15 @@
-__version__ = "1.0.0"
+__version__ = "2.0.0"
+
+import os
+from pathlib import Path
+
+# Storage paths
+DATA_DIR = Path(os.environ.get("RAVIN_DATA_DIR", "data"))
+SESSIONS_DIR = DATA_DIR / "sessions"
+SESSION_LOCK_TIMEOUT = 30
+
+# Legacy v1 flat files (migrated only when MIGRATE_LEGACY=1)
+MIGRATE_LEGACY = os.environ.get("MIGRATE_LEGACY", "").strip() in ("1", "true", "yes")
 
 # Ollama models
 PRIMARY_LEGAL_ANALYST_MODEL = "qwen2.5:14b-instruct"

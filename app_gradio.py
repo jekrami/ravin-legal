@@ -1,15 +1,10 @@
 import gradio as gr
-import json
 import logging
-import os
 from datetime import datetime
 
 from config import __version__
-from document_processor import extract_full_text, process_document
-from legal_analyzer.orchestrator import run_deep_analysis
-from legal_analyzer.presentation import generate_persian_presentation
 from llm_handler import LlmHandler
-from rag_pipeline import RagPipeline
+from services import AnalysisService, ChatService, DocumentService, get_session_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,25 +12,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Global State for Shared Knowledge Base ---
-rag_pipeline = RagPipeline()
-documents_metadata = {}
-
-# --- File Paths for Persistence ---
-VECTOR_DB_PATH = "vector_db.pkl"
-CHAT_HISTORY_PATH = "rag_chat_history.json"
-DOCUMENTS_METADATA_PATH = "documents_metadata.json"
-
-# --- Initialization ---
-if os.path.exists(VECTOR_DB_PATH):
-    rag_pipeline.load(VECTOR_DB_PATH)
-if os.path.exists(DOCUMENTS_METADATA_PATH):
-    with open(DOCUMENTS_METADATA_PATH, "r", encoding="utf-8") as f:
-        documents_metadata = json.load(f)
-
+session_manager = get_session_manager()
+document_service = DocumentService(session_manager)
+chat_service = ChatService(session_manager)
+analysis_service = AnalysisService(session_manager)
 llm_handler = LlmHandler()
 
-# Persian translations for analysis passes
 PASS_TITLES_FA = {
     1: "مرحله ۱ — تحلیل ساختاری و شکلی",
     2: "مرحله ۲ — طبقه‌بندی موضوع و تعهدات",
@@ -48,54 +30,16 @@ PASS_TITLES_FA = {
 }
 
 
-def load_chat_history():
-    """Load persisted chat history into Gradio messages format."""
-    if not os.path.exists(CHAT_HISTORY_PATH):
-        return []
-
-    try:
-        with open(CHAT_HISTORY_PATH, "r", encoding="utf-8") as f:
-            stored = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Could not load chat history: %s", e)
-        return []
-
-    messages = []
-    for entry in stored:
-        if "user" in entry:
-            messages.append({"role": "user", "content": entry["user"]})
-        if "assistant" in entry:
-            messages.append({"role": "assistant", "content": entry["assistant"]})
-    return messages
-
-
-def append_to_global_chat_history(user_query, assistant_answer):
-    """Appends a single turn to the global chat history file."""
-    history_entry = {"user": user_query, "assistant": assistant_answer}
-
-    full_history = []
-    if os.path.exists(CHAT_HISTORY_PATH):
-        with open(CHAT_HISTORY_PATH, "r", encoding="utf-8") as f:
-            try:
-                full_history = json.load(f)
-            except json.JSONDecodeError:
-                pass
-
-    full_history.append(history_entry)
-
-    with open(CHAT_HISTORY_PATH, "w", encoding="utf-8") as f:
-        json.dump(full_history, f, ensure_ascii=False, indent=4)
-
-
-def save_metadata():
-    with open(DOCUMENTS_METADATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(documents_metadata, f, ensure_ascii=False, indent=4)
+def init_session(session_id):
+    """Assign a session ID and load per-session chat + document list."""
+    new_id = session_manager.get_or_create_session(session_id)
+    history = chat_service.load_history(new_id)
+    doc_list = document_service.get_documents_list(new_id)
+    return new_id, history, doc_list
 
 
 def create_progress_html(current_step, total_steps, current_title):
-    """Create HTML progress visualization."""
     progress_percent = (current_step / total_steps) * 100
-
     return f"""
     <div style="direction: rtl; text-align: right; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
         <h3 style="color: #1976d2;">📊 پیشرفت تحلیل عمیق حقوقی</h3>
@@ -115,7 +59,6 @@ def create_progress_html(current_step, total_steps, current_title):
 
 
 def format_analysis_results(results):
-    """Format analysis results for display."""
     output = "# 📋 گزارش تحلیل عمیق حقوقی\n\n"
     output += f"**تاریخ تحلیل:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     output += "---\n\n"
@@ -132,71 +75,66 @@ def format_analysis_results(results):
 
 
 def run_deep_analysis_with_progress(
-    pdf_file, pass1, pass2, pass3, pass4, pass5, pass6, pass7, pass8
+    session_id,
+    pdf_file,
+    pass1, pass2, pass3, pass4, pass5, pass6, pass7, pass8,
 ):
-    """Run deep legal analysis with progress updates via orchestrator."""
+    session_id = session_manager.get_or_create_session(session_id)
+
     if pdf_file is None:
-        yield None, "❌ لطفاً یک فایل PDF را آپلود کنید.", ""
+        yield session_id, None, "❌ لطفاً یک فایل PDF را آپلود کنید.", ""
         return
 
     selected_passes = [pass1, pass2, pass3, pass4, pass5, pass6, pass7, pass8]
     if not any(selected_passes):
-        yield None, "❌ لطفاً حداقل یک مرحله تحلیل را انتخاب کنید.", ""
+        yield session_id, None, "❌ لطفاً حداقل یک مرحله تحلیل را انتخاب کنید.", ""
         return
 
     try:
-        yield None, "📄 در حال استخراج متن از PDF...", ""
-        contract_text = extract_full_text(pdf_file.name)
-
-        if not contract_text.strip():
-            yield None, "❌ خطا: نتوانستم متنی از PDF استخراج کنم.", ""
-            return
-
+        yield session_id, None, "📄 در حال استخراج متن از PDF...", ""
         selected_pass_ids = [i + 1 for i, selected in enumerate(selected_passes) if selected]
         results = None
         total_steps = len(selected_pass_ids)
 
-        for event in run_deep_analysis(
-            contract_text,
-            selected_pass_ids=selected_pass_ids,
-            title_fa_map=PASS_TITLES_FA,
+        for event in analysis_service.run_analysis(
+            session_id,
+            pdf_file.name,
+            selected_pass_ids,
+            PASS_TITLES_FA,
         ):
             if event["event"] == "progress":
                 pass_id = event["pass_id"]
                 title_fa = PASS_TITLES_FA.get(pass_id, event["title"])
                 progress_html = create_progress_html(event["step"], event["total"], title_fa)
                 status_msg = f"🔍 در حال اجرای {title_fa}..."
-                yield progress_html, status_msg, ""
+                yield session_id, progress_html, status_msg, ""
             elif event["event"] == "complete":
                 results = event["results"]
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        json_file = f"deep_analysis_{timestamp}.json"
-        with open(json_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
+        json_file, presentation_file = analysis_service.save_results(session_id, results)
 
         progress_html = create_progress_html(
             total_steps, total_steps, "✅ در حال تولید گزارش فارسی..."
         )
-        yield progress_html, "📝 در حال تبدیل نتایج به گزارش فارسی...", ""
+        yield session_id, progress_html, "📝 در حال تبدیل نتایج به گزارش فارسی...", ""
 
         try:
-            persian_presentation = generate_persian_presentation(
-                analysis_json_path=json_file,
-                output_path="presentation_fa.txt",
+            persian_presentation = analysis_service.generate_presentation(
+                json_file, presentation_file
             )
             progress_html = create_progress_html(total_steps, total_steps, "✅ تحلیل کامل شد!")
             final_status = (
                 f"✅ تحلیل عمیق با موفقیت کامل شد!\n"
                 f"📁 نتایج JSON در فایل {json_file} ذخیره شد.\n"
-                f"📄 گزارش فارسی در فایل presentation_fa.txt ذخیره شد."
+                f"📄 گزارش فارسی در فایل {presentation_file} ذخیره شد."
             )
-            yield progress_html, final_status, persian_presentation
+            yield session_id, progress_html, final_status, persian_presentation
         except Exception as e:
             logger.exception("Presentation generation failed")
             progress_html = create_progress_html(total_steps, total_steps, "✅ تحلیل کامل شد!")
             final_report = format_analysis_results(results)
             yield (
+                session_id,
                 progress_html,
                 f"⚠️ تحلیل کامل شد اما خطا در تولید گزارش فارسی: {e}\n"
                 f"📁 نتایج در فایل {json_file} ذخیره شد.",
@@ -205,113 +143,71 @@ def run_deep_analysis_with_progress(
 
     except Exception as e:
         logger.exception("Deep analysis failed")
-        yield None, f"❌ خطا در تحلیل: {str(e)}", ""
+        yield session_id, None, f"❌ خطا در تحلیل: {str(e)}", ""
 
 
-def get_documents_list():
-    """Get formatted list of loaded documents."""
-    stats = rag_pipeline.get_document_stats()
-    if not stats:
-        return "هیچ سندی بارگذاری نشده است."
-
-    doc_list = "📚 **اسناد بارگذاری شده:**\n\n"
-    for i, (doc_name, chunk_count) in enumerate(stats.items(), 1):
-        doc_list += f"{i}. **{doc_name}** ({chunk_count} بخش)\n"
-
-    return doc_list
+def process_uploaded_file(session_id, file):
+    session_id = session_manager.get_or_create_session(session_id)
+    status, doc_list = document_service.process_uploaded_file(session_id, file)
+    return session_id, status, doc_list
 
 
-def delete_document(doc_name):
-    """Delete a specific document from the knowledge base."""
-    if not doc_name or doc_name.strip() == "":
-        return "لطفاً نام سند را وارد کنید.", get_documents_list()
-
-    success = rag_pipeline.delete_document(doc_name.strip())
-
-    if success:
-        if doc_name.strip() in documents_metadata:
-            del documents_metadata[doc_name.strip()]
-        save_metadata()
-        rag_pipeline.save(VECTOR_DB_PATH)
-        return f"✅ سند `{doc_name.strip()}` با موفقیت حذف شد.", get_documents_list()
-
-    return f"❌ سند `{doc_name.strip()}` یافت نشد.", get_documents_list()
+def delete_document(session_id, doc_name):
+    session_id = session_manager.get_or_create_session(session_id)
+    status, doc_list = document_service.delete_document(session_id, doc_name)
+    return session_id, status, doc_list
 
 
-def clear_all_documents_confirmed():
-    """Clear all documents from the knowledge base (after confirmation)."""
-    rag_pipeline.documents = []
-    rag_pipeline.document_sources = []
-    rag_pipeline.index = None
-    documents_metadata.clear()
-
-    if os.path.exists(VECTOR_DB_PATH):
-        os.remove(VECTOR_DB_PATH)
-    if os.path.exists(DOCUMENTS_METADATA_PATH):
-        os.remove(DOCUMENTS_METADATA_PATH)
-
-    return "✅ همه اسناد با موفقیت حذف شدند.", get_documents_list(), gr.update(visible=False)
+def clear_all_documents_confirmed(session_id):
+    session_id = session_manager.get_or_create_session(session_id)
+    document_service.clear_all_documents(session_id)
+    chat_service.clear_history(session_id)
+    doc_list = document_service.get_documents_list(session_id)
+    return session_id, "✅ همه اسناد با موفقیت حذف شدند.", doc_list, gr.update(visible=False)
 
 
-def process_uploaded_file(file):
-    """Handles the file upload and processing."""
-    if file is None:
-        return "لطفاً یک فایل را برای پردازش آپلود کنید.", get_documents_list()
-
-    try:
-        text_chunks = process_document(file.name)
-        if not text_chunks:
-            return "خطا: نتوانستم هیچ متنی از فایل استخراج کنم.", get_documents_list()
-
-        source_name = os.path.basename(file.name)
-        added_count = rag_pipeline.add_documents(text_chunks, source_name=source_name)
-        if added_count == 0:
-            return "خطا: هیچ بخش معتبری از فایل استخراج نشد.", get_documents_list()
-
-        rag_pipeline.save(VECTOR_DB_PATH)
-        documents_metadata[source_name] = {
-            "processed": True,
-            "chunks": added_count,
-            "timestamp": datetime.now().isoformat(),
-        }
-        save_metadata()
-
-        return (
-            f"✅ فایل `{source_name}` با موفقیت به پایگاه دانش اضافه شد.\n"
-            f"📄 تعداد بخش‌ها: {added_count}",
-            get_documents_list(),
-        )
-    except Exception as e:
-        logger.exception("File upload processing failed")
-        return f"یک خطای غیرمنتظره رخ داد: {e}", get_documents_list()
+def refresh_documents(session_id):
+    session_id = session_manager.get_or_create_session(session_id)
+    return session_id, document_service.get_documents_list(session_id)
 
 
-async def chat_interface_fn(message, history):
-    """Handles the chat interaction for the Gradio ChatInterface."""
+def clear_chat(session_id):
+    session_id = session_manager.get_or_create_session(session_id)
+    chat_service.clear_history(session_id)
+    return session_id, []
+
+
+async def chat_interface_fn(message, history, session_id):
+    session_id = session_manager.get_or_create_session(session_id)
+
     if history is None:
         history = []
 
-    if not rag_pipeline.index:
+    with session_manager.session_lock(session_id) as state:
+        has_index = state.rag_pipeline.index is not None
+
+    if not has_index:
         history.append({"role": "user", "content": message})
         history.append({
             "role": "assistant",
             "content": "هنوز هیچ سندی در پایگاه دانش وجود ندارد. لطفاً ابتدا یک فایل را آپلود کنید.",
         })
-        yield history
+        yield session_id, history
         return
 
     history.append({"role": "user", "content": message})
     history.append({"role": "assistant", "content": "در حال جستجو و تحلیل..."})
-    yield history
+    yield session_id, history
 
-    retrieved_context, sources = rag_pipeline.retrieve(message, return_sources=True)
+    with session_manager.session_lock(session_id) as state:
+        retrieved_context, sources = state.rag_pipeline.retrieve(message, return_sources=True)
 
     if not retrieved_context:
         history[-1] = {
             "role": "assistant",
             "content": "نتوانستم اطلاعات مرتبطی در اسناد موجود پیدا کنم.",
         }
-        yield history
+        yield session_id, history
         return
 
     final_answer = await llm_handler.get_synthesized_answer(message, retrieved_context)
@@ -323,11 +219,10 @@ async def chat_interface_fn(message, history):
 
     final_answer_with_sources = final_answer + source_info
     history[-1] = {"role": "assistant", "content": final_answer_with_sources}
-    append_to_global_chat_history(message, final_answer_with_sources)
-    yield history
+    chat_service.append_turn(session_id, message, final_answer_with_sources)
+    yield session_id, history
 
 
-# --- Gradio Interface Definition ---
 custom_css = """
 footer {display: none !important}
 .rtl-title {
@@ -341,6 +236,8 @@ footer {display: none !important}
 """
 
 with gr.Blocks(theme=gr.themes.Soft(), css=custom_css) as demo:
+    session_id = gr.State(value=None)
+
     gr.Markdown(
         f"""
         <div class="rtl-title">
@@ -366,7 +263,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css=custom_css) as demo:
                         upload_status = gr.Textbox(label="وضعیت پردازش", interactive=False, rtl=True, lines=3)
 
                     with gr.Group():
-                        documents_display = gr.Markdown(value=get_documents_list(), rtl=True)
+                        documents_display = gr.Markdown(value="هیچ سندی بارگذاری نشده است.", rtl=True)
                         refresh_docs_btn = gr.Button("🔄 بروزرسانی لیست", size="sm")
 
                     with gr.Group():
@@ -394,12 +291,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css=custom_css) as demo:
 
                 with gr.Column(scale=2):
                     gr.Markdown('<div class="rtl-title"><h3>💬 چت با اسناد</h3></div>')
-                    chatbot = gr.Chatbot(
-                        label="مکالمه",
-                        height=500,
-                        rtl=True,
-                        value=load_chat_history(),
-                    )
+                    chatbot = gr.Chatbot(label="مکالمه", height=500, rtl=True)
                     msg = gr.Textbox(
                         label="سوال خود را بپرسید",
                         placeholder="سوال خود را در مورد قراردادها اینجا تایپ کنید...",
@@ -443,26 +335,36 @@ with gr.Blocks(theme=gr.themes.Soft(), css=custom_css) as demo:
                     value="نتایج تحلیل اینجا نمایش داده می‌شود...",
                 )
 
-    file_uploader.upload(
-        fn=process_uploaded_file,
-        inputs=file_uploader,
-        outputs=[upload_status, documents_display],
+    demo.load(
+        fn=init_session,
+        inputs=[session_id],
+        outputs=[session_id, chatbot, documents_display],
     )
 
-    refresh_docs_btn.click(fn=lambda: get_documents_list(), inputs=None, outputs=documents_display)
+    file_uploader.upload(
+        fn=process_uploaded_file,
+        inputs=[session_id, file_uploader],
+        outputs=[session_id, upload_status, documents_display],
+    )
+
+    refresh_docs_btn.click(
+        fn=refresh_documents,
+        inputs=[session_id],
+        outputs=[session_id, documents_display],
+    )
 
     delete_btn.click(
         fn=delete_document,
-        inputs=doc_name_input,
-        outputs=[delete_status, documents_display],
+        inputs=[session_id, doc_name_input],
+        outputs=[session_id, delete_status, documents_display],
     )
 
     clear_all_btn.click(fn=lambda: gr.update(visible=True), inputs=None, outputs=confirm_dialog)
 
     confirm_yes_btn.click(
         fn=clear_all_documents_confirmed,
-        inputs=None,
-        outputs=[delete_status, documents_display, confirm_dialog],
+        inputs=[session_id],
+        outputs=[session_id, delete_status, documents_display, confirm_dialog],
     )
 
     confirm_no_btn.click(
@@ -471,13 +373,18 @@ with gr.Blocks(theme=gr.themes.Soft(), css=custom_css) as demo:
         outputs=[confirm_dialog, delete_status],
     )
 
-    msg.submit(chat_interface_fn, [msg, chatbot], [chatbot]).then(lambda: "", None, msg)
-    submit_btn.click(chat_interface_fn, [msg, chatbot], [chatbot]).then(lambda: "", None, msg)
-    clear_chat_btn.click(lambda: [], None, chatbot, queue=False)
+    msg.submit(chat_interface_fn, [msg, chatbot, session_id], [session_id, chatbot]).then(
+        lambda: "", None, msg
+    )
+    submit_btn.click(chat_interface_fn, [msg, chatbot, session_id], [session_id, chatbot]).then(
+        lambda: "", None, msg
+    )
+    clear_chat_btn.click(clear_chat, [session_id], [session_id, chatbot], queue=False)
 
     deep_analysis_btn.click(
         fn=run_deep_analysis_with_progress,
         inputs=[
+            session_id,
             deep_analysis_file,
             pass1_checkbox,
             pass2_checkbox,
@@ -488,7 +395,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css=custom_css) as demo:
             pass7_checkbox,
             pass8_checkbox,
         ],
-        outputs=[deep_analysis_progress, deep_analysis_status, deep_analysis_output],
+        outputs=[session_id, deep_analysis_progress, deep_analysis_status, deep_analysis_output],
     )
 
 
